@@ -1,4 +1,6 @@
-﻿var restUrl = "../rest/v1/ws_geo_attributequery.php";
+﻿var stdTileWidth = 78271.52; //Standard width of a single 256 pixel map tile at zoom level one
+var metres2Degrees = (2 * Math.PI * 6378137) / 360;   //Rough (based on equatorial radius of the Earth), but more than adequate for online mapping
+var restUrl = "../rest/v1/ws_geo_attributequery.php";
 var currStatGroup = "b02";
 var currStatId = "b109";
 var currStatNames = [];
@@ -33,6 +35,7 @@ function init() {
     map.attributionControl.addAttribution('2006 Census data © <a href="http://www.abs.gov.au/websitedbs/D3310114.nsf/Home/%C2%A9+Copyright">Australian Bureau of Statistics</a>');
 
     //Get a new set of boundaries when map panned or zoomed
+    //TO DO: Handle map movement due to popup
     map.on('dragend', function (e) {
         getBoundaries();
     });
@@ -56,17 +59,23 @@ function getBoundaries() {
     //Get zoom level
     zoomLevel = map.getZoom();
 
-    //Set ABS bdy table type
+    //Set ABS Census boundary name
     currBdy = setBoundary(zoomLevel);
 
+    //Get Vector thinning tolerance (in degrees) and decimal places to minimise GeoJSON response
+    var tolerance = setVectorTolerance(zoomLevel);
+    var decimalPlaces = setDecimalPlaces(tolerance);
+
     //Set the ABS list of Census stats to use
+    //TO DO: alter code to handle any list of attributes, not just census ones
     currStatNames = setStatNames();
     currStatIds = setStatIds();
 
-    //Build URL with querystring - selects census bdy attributes, stats and the census boundary geometries as GeoJSON objects
+    //Build URL with querystring - selects census bdy attributes, stats and the census boundary geometries as minimised GeoJSON objects
+    // callback is to handle cross domain JSON
     var ua = [];
     ua.push(restUrl);
-    ua.push("?jsoncallback=?&fields=absid,absname,geojson,");
+    ua.push("?jsoncallback=?&fields=absid,absname,ST_AsGeoJSON(ST_Simplify(geom," + tolerance + ")," + decimalPlaces + ",0) as geojson,");
     ua.push(currStatIds.join(","));
     ua.push("&parameters=ST_Intersects(ST_MakeBox2D(ST_Point(");
     ua.push(sw.lng.toString());
@@ -150,7 +159,6 @@ function loadBdys(json) {
 
     }
 
-    //reset boundaries
     if (bdyLayer != null) map.removeLayer(bdyLayer);
     bdyLayer = new L.LayerGroup();
 
@@ -202,14 +210,14 @@ function setBoundary(zoomLevel) {
         case 2:
         case 3:
         case 4:
-        case 5:
             return "ste"; //States
+        case 5:
         case 6:
         case 7:
             return "sd"; //Statistical Divisions
         case 8:
         case 9:
-            return "ssd";
+            return "ssd"; //Statistical Sub-Divisions
         case 10:
         case 11:
             return "lga"; //ABS Local Government Areas (i.e. council areas)
@@ -255,4 +263,24 @@ function setColour(colourStat) {
 
     //Convert to hex 3 digit colour
     return "#b" + Math.floor(percent * 255).toString(16);
+}
+
+//Sets the tolerance in degrees to thin (aka simplify or generalise) the vector data on the server before it's returned
+function setVectorTolerance(zoomLevel) {
+    return (stdTileWidth / Math.pow(2, zoomLevel - 1)) / metres2Degrees;
+}
+
+//Sets the number of decimal places per GeoJSON coordinate to reduce response size
+// (e.g. 10 decimal places per lat/long in 100 polygons with 50 sets of coords is 2 * 10 * 100 * 50 = 100,000 bytes uncompressed
+// dropping 6 decimal places would save 60,000 bytes per request) 
+function setDecimalPlaces(tolerance) {
+    var places = 0;
+    var precision = 1.0;
+
+    while (precision > tolerance) {
+        places += 1;
+        precision /= 10;
+    }
+
+    return places
 }
